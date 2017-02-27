@@ -1,25 +1,21 @@
 import UIKit
+import WebKit
 
-class PagedWebView: UIWebView, UIWebViewDelegate, UIAccessibilityReadingContent {
+class PagedWebView: WKWebView, WKNavigationDelegate, UIScrollViewDelegate, UIAccessibilityReadingContent {
   
-  struct Line {
-    let rect: CGRect
-    let text: String
-    let page: Int
-  }
+  private var currentPageIndex = 0
+  private var document: LineByLineAccessibility.Document?
   
-  var lines: [Line]! = nil
-  var currentPageIndex = 0
-  
-  override init(frame: CGRect) {
-    super.init(frame: frame)
-    self.paginationMode = .leftToRight
+  init() {
+    let configuration = WKWebViewConfiguration()
+    configuration.suppressesIncrementalRendering = true
+    super.init(frame: CGRect.zero, configuration: configuration)
+    self.navigationDelegate = self;
+    self.scrollView.delegate = self
     self.scrollView.isPagingEnabled = true
     self.scrollView.bounces = false
     self.isAccessibilityElement = true
     self.accessibilityTraits = UIAccessibilityTraitCausesPageTurn
-    self.delegate = self;
-    self.scrollView.delegate = self
   }
   
   @available(*, unavailable)
@@ -27,53 +23,38 @@ class PagedWebView: UIWebView, UIWebViewDelegate, UIAccessibilityReadingContent 
     fatalError("init(coder:) has not been implemented")
   }
   
-  func loadUrl(url: URL) {
-    self.isUserInteractionEnabled = false
-    self.loadRequest(URLRequest(url: url))
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    // Waiting here is a hack, but this is just a demo. Normally the app would
+    // call `LineByLineAccessibility.processDocument` itself and handle the result
+    // asynchronously.
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+      self.evaluateJavaScript("processedDocument") { (object, error) in
+        if let object = object {
+          self.document = LineByLineAccessibility.documentOfJSONObject(object)
+        }
+        
+        if(self.document == nil) {
+          NSLog("Error: Failed to set document")
+        }
+      }
+    }
   }
   
-  func webViewDidFinishLoad(_ webView: UIWebView) {
-    let string = self.stringByEvaluatingJavaScript(from: "lines.shift(); JSON.stringify(lines)")!
-    let object = try! JSONSerialization.jsonObject(with: string.data(using: String.Encoding.utf8)!,
-                                                   options: [.allowFragments])
-    
-    var mutableLines: [Line] = []
-    for lineObject in object as! [AnyObject] {
-      let lineDictionary = lineObject as! [String: AnyObject]
-      let text = lineDictionary["text"] as! String
-      let rectDictionary = lineDictionary["clientRect"] as! [String: NSNumber]
-      let rect = CGRect(
-        x: CGFloat(rectDictionary["left"]!.floatValue),
-        y: CGFloat(rectDictionary["top"]!.floatValue),
-        width: CGFloat(rectDictionary["width"]!.floatValue),
-        height: CGFloat(rectDictionary["height"]!.floatValue))
-      let page = (lineDictionary["page"] as! NSNumber).intValue
-      let line = Line(rect: rect, text: text, page: page)
-      mutableLines.append(line)
-    }
-    
-    self.lines = mutableLines
-    
-    self.isUserInteractionEnabled = true
-  }
   
   override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
     let pageIndexDelta = direction == .next ? 1 : direction == .previous ? -1 : 0
     self.currentPageIndex = self.currentPageIndex + pageIndexDelta
-    let rect = CGRect(x: CGFloat(self.currentPageIndex) * self.frame.width,
-                      y: 0,
-                      width: self.frame.width,
-                      height: self.frame.height)
-    self.scrollView.scrollRectToVisible(rect, animated: true)
+    let point = CGPoint(x: CGFloat(self.currentPageIndex) * self.frame.width, y: 0)
+    self.scrollView.setContentOffset(point, animated: true)
     UIAccessibilityPostNotification(UIAccessibilityPageScrolledNotification, nil)
     
     return true
   }
   
-  // Returns the line number that contains the specified point.
   func accessibilityLineNumber(for point: CGPoint) -> Int {
-    for (i, line) in self.linesOnCurrentPage().enumerated() {
-      if line.rect.contains(point) {
+    guard let document = self.document else { return NSNotFound }
+    for (i, line) in document.pages[self.currentPageIndex].lines.enumerated() {
+      if line.pageRelativeRect.contains(point) {
         return i
       }
     }
@@ -81,32 +62,20 @@ class PagedWebView: UIWebView, UIWebViewDelegate, UIAccessibilityReadingContent 
     return NSNotFound
   }
   
-  // Returns the text associated with the specified line number.
   func accessibilityContent(forLineNumber i: Int) -> String? {
-    if(i < self.linesOnCurrentPage().count) {
-      return self.linesOnCurrentPage()[i].text
-    } else {
-      return nil
-    }
+    return self.document?.pages[self.currentPageIndex].lines[i].text
   }
   
-  // Returns the onscreen frame associated with the specified line number.
   func accessibilityFrame(forLineNumber i: Int) -> CGRect {
-    return self.linesOnCurrentPage()[i].rect
+    guard let document = self.document else { return CGRect.zero }
+    return document.pages[self.currentPageIndex].lines[i].pageRelativeRect
   }
   
-  // Returns the text displayed on the current page.
   func accessibilityPageContent() -> String? {
-    return self.linesOnCurrentPage().map({line in line.text}).joined(separator: " ")
+    return document?.pages[self.currentPageIndex].lines.map({line in line.text}).joined(separator: " ")
   }
   
-  func linesOnCurrentPage() -> [Line] {
-    return self.lines.filter {line in
-      line.page == Int(self.scrollView.contentOffset.x / self.scrollView.frame.size.width);
-    }
-  }
-  
-  override func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+  func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
     self.currentPageIndex = Int(self.scrollView.contentOffset.x / self.scrollView.frame.width)
   }
 }

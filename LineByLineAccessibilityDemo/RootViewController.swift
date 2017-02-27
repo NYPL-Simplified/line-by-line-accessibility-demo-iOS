@@ -17,7 +17,7 @@ final class RootViewController: UIViewController {
   }
   
   private func loadFirstPage() {
-    let url = Bundle.main.url(forResource: "click-test", withExtension: "html")
-    self.webView.loadUrl(url: url!)
+    let url = Bundle.main.url(forResource: "example", withExtension: "html")
+    self.webView.load(URLRequest(url: url!))
   }
 }
